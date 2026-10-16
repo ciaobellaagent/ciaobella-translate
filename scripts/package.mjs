@@ -1,0 +1,11 @@
+import { execFileSync } from 'node:child_process';
+import { mkdirSync, readFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+const root = dirname(dirname(fileURLToPath(import.meta.url)));
+execFileSync(process.execPath, [join(root, 'scripts/check.mjs')], { stdio: 'inherit' });
+mkdirSync(join(root, 'deliverables'), { recursive: true });
+const { version } = JSON.parse(readFileSync(join(root, 'extension/manifest.json')));
+const output = join(root, `deliverables/luna-translate-extension-${version}.zip`);
+execFileSync('/usr/bin/zip', ['-q', '-r', output, '.'], { cwd: join(root, 'extension') });
+console.log(output);

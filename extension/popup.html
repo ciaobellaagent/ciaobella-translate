@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Luna 沉浸翻译</title><link rel="stylesheet" href="ui.css"></head>
+<body class="popup">
+  <header><a class="wordmark" href="#" aria-label="Luna 沉浸翻译"><img class="brand-icon" src="icons/bella.png" alt="">Luna</a><span class="eyebrow">CIAO BELLA</span></header>
+  <main>
+    <h1>读懂世界，<br><em>留住原文。</em></h1>
+    <p class="intro">让译文跟随段落，阅读跟随你。</p>
+    <div class="connection"><span id="dot" class="dot"></span><span id="connection">正在检查本地服务…</span><span class="model" id="model-status">Luna · medium</span></div>
+    <button class="primary" id="start">翻译当前网页 <span aria-hidden="true">↗</span></button>
+    <div class="actions"><button class="quiet" id="pause">暂停翻译</button><span></span><button class="quiet" id="reset">恢复原文</button></div>
+    <p class="notice" id="notice" role="status" aria-live="polite"></p>
+    <div class="footnote"><span>只翻译你读到的内容</span><span>⌥ ⇧ L</span></div>
+  </main>
+  <footer><span>Codex 订阅 · 模型可选</span><button class="quiet" id="settings" aria-label="打开翻译设置">设置 ↗</button></footer>
+  <script src="popup.js"></script>
+</body></html>

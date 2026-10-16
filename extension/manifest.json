@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Luna 沉浸翻译",
+  "version": "0.5.0",
+  "description": "使用自己的 Codex 订阅，选择模型与推理强度，按段落双语阅读网页。",
+  "permissions": ["activeTab", "scripting", "storage"],
+  "host_permissions": ["http://127.0.0.1/*"],
+  "content_scripts": [{
+    "matches": ["http://*/*", "https://*/*"],
+    "js": ["content.js"],
+    "run_at": "document_idle"
+  }],
+  "background": { "service_worker": "background.js" },
+  "action": { "default_popup": "popup.html", "default_title": "Luna 沉浸翻译", "default_icon": {"16":"icons/16.png","32":"icons/32.png"} },
+  "options_page": "options.html",
+  "icons": {"16":"icons/16.png","32":"icons/32.png","48":"icons/48.png","128":"icons/128.png"},
+  "web_accessible_resources": [{"resources":["icons/bella.png"],"matches":["http://*/*","https://*/*"]}],
+  "commands": {
+    "toggle-translation": {
+      "suggested_key": { "default": "Alt+Shift+L", "mac": "Alt+Shift+L" },
+      "description": "开启 / 暂停当前页的双语翻译"
+    }
+  }
+}

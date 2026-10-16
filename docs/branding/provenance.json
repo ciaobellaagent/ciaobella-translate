@@ -1,0 +1,46 @@
+{
+  "generatedOn": "2026-10-16",
+  "tool": "OpenAI built-in image_gen",
+  "selected": "08 · Symbol First",
+  "reference": "Author-provided Ciao Bella developer identity; adopted 2026-09-15",
+  "background": "opaque warm ivory",
+  "conversion": "Lanczos3 square resize; 128-colour PNG palette compression; original character geometry retained",
+  "license": "MIT copyright license for included code and artwork; no trademark rights granted",
+  "assets": [
+    {
+      "file": "docs/branding/ciao-bella-original.png",
+      "bytes": 81417,
+      "sha256": "ea08f36a5425d3ec89d46ef488c5b78dadca2264a0d78ad7a7a55d8634c4c8e3"
+    },
+    {
+      "file": "docs/branding/08-source.png",
+      "bytes": 1218475,
+      "sha256": "fdf7b542c686bf4947519a8534a6e72c0569d979a477abf07a8212b2b5283e57"
+    },
+    {
+      "file": "extension/icons/bella.png",
+      "bytes": 35103,
+      "sha256": "b9fd0de325d57f8f3e0089ea339163653f2645599944f04f2c85fc8eca2820a3"
+    },
+    {
+      "file": "extension/icons/16.png",
+      "bytes": 825,
+      "sha256": "c21e432a3ea9fb93eb9f54e90270e3af3ad1afadd48b9401f4788fd416ba3da0"
+    },
+    {
+      "file": "extension/icons/32.png",
+      "bytes": 1652,
+      "sha256": "4a68f975df9534ee436d686ef9d465f5bc53148dd542b96ad476a8611784f450"
+    },
+    {
+      "file": "extension/icons/48.png",
+      "bytes": 2450,
+      "sha256": "279c7a5cf29a21d6ff245d4860625ab25727c410cc3d35908611013ce3390eec"
+    },
+    {
+      "file": "extension/icons/128.png",
+      "bytes": 9680,
+      "sha256": "13be6c7e581f92b3d9f0dc6862502e0918a1358ba3c7d8c7cf8b16973545f036"
+    }
+  ]
+}

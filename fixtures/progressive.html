@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Luna progressive reading acceptance</title>
+<style>
+body{margin:0;background:#f8f5ed;color:#233c34;font:18px/1.8 Georgia,serif}
+main{max-width:750px;margin:55px auto;padding:0 35px}p{margin:22px 0}
+.collapsed{display:none}.spacer{height:1800px}
+</style>
+<main>
+<h1>Progressive bilingual reading</h1>
+<p id="first">The first paragraph should start translating when the reader enables translation.</p>
+<p id="second">Several nearby paragraphs should start together while the original layout remains readable.</p>
+<p id="inline">Keep <code>fetch()</code> and <a href="#far">the original link</a> intact.<span hidden>HIDDEN_SENTINEL_MUST_NOT_SEND</span></p>
+<details id="details"><summary>Expand an existing section</summary><p id="details-text">This existing paragraph appears when the details element opens.</p></details>
+<div id="class-reveal" class="collapsed"><p>Class changes should reveal and translate existing content.</p></div>
+<div id="hidden-reveal" hidden><p>The hidden attribute should reveal and translate existing content.</p></div>
+<div id="style-reveal" style="display:none"><p>Style changes should reveal and translate existing content.</p></div>
+<div id="leaf">An existing leaf can later become a container with a child paragraph.</div>
+<div class="spacer" aria-hidden="true"></div>
+<p id="far">FAR_SENTINEL: this distant paragraph should wait until the reader scrolls close.</p>
+<div id="long-page"></div>
+</main>
+<script>
+for(let i=0;i<1000;i++){
+  const p=document.createElement('p');p.textContent=`DISTANT_${i}: Long pages should discover candidates without submitting distant paragraphs.`;
+  document.getElementById('long-page').append(p);
+}
+</script>
+</html>
