@@ -26,7 +26,7 @@ test('validated local settings persist atomically with restrictive permissions a
   assert.equal(saved.basePrompt, INSTRUCTIONS); assert.notEqual(saved.promptRevision, original.promptRevision);
   assert.equal((await stat(join(runtime, 'settings.json'))).mode & 0o777, 0o600);
   assert.deepEqual(JSON.parse(await readFile(join(runtime, 'settings.json'), 'utf8')), { version: 2,
-    settings: { model: MODEL, effort: 'medium', supplementalPrompt: saved.supplementalPrompt, cacheDays: 7, cacheMaxBytes: 8 * MiB } });
+    settings: { model: MODEL, effort: 'medium', concurrency: 12, supplementalPrompt: saved.supplementalPrompt, cacheDays: 7, cacheMaxBytes: 8 * MiB } });
   const reopened = new SettingsStore({ runtime });
   assert.deepEqual(await reopened.load(), saved);
   for (const patch of [{ model: 'invalid\nmodel' }, { effort: 'ultra' }, { cacheDays: 365 }, { cacheMaxBytes: MiB },
@@ -151,4 +151,14 @@ test('authenticated settings, cache cleanup and account status routes never init
   assert.equal(cleared.status, 200); assert.equal(cleared.body.cleared, true); assert.equal(cleared.body.cacheEntries, 0);
   assert.equal((await request('/settings')).body.supplementalPrompt, 'Formal');
   assert.equal(calls, 0);
+});
+
+test('concurrency persists, rejects invalid input and does not invalidate translation caches', async t => {
+  const runtime = await temporary(t), store = new SettingsStore({ runtime });
+  const before = store.read();
+  assert.equal(before.concurrency, 12);
+  for (const concurrency of [0, 25, 1.5, '12', null]) assert.throws(() => store.update({ concurrency }), /1–24/);
+  const saved = await store.update({ concurrency: 8 });
+  assert.equal(saved.promptRevision, before.promptRevision);
+  assert.equal((await new SettingsStore({ runtime }).load()).concurrency, 8);
 });

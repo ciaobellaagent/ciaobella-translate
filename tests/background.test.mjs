@@ -18,6 +18,7 @@ function worker() {
     commands: { onCommand: { addListener() {} } } },
     fetch: async (url, options) => ({ ok: true, json: async () => {
       if (String(url).startsWith('chrome-extension:')) return {};
+      if (String(url).endsWith('/settings')) return { model: 'gpt-6-luna', effort: 'medium', concurrency: 12 };
       if (String(url).endsWith('/cache')) return { model: 'gpt-6-luna', translations: [null], cached: 0 };
       if (String(url).endsWith('/jobs')) { jobs.push(JSON.parse(options.body)); return { id: 'job' }; }
       return { state: 'completed', result: { model: 'gpt-6-luna', translations: [{ text: '翻译结果' }] } };
@@ -29,12 +30,13 @@ function worker() {
   return { jobs, config, storage, send };
 }
 
-test('page control reads only target preferences, without inference or a pairing credential', async () => {
+test('page control reads scheduler and language preferences without inference or disclosing credentials', async () => {
   const w = worker();
   const reply = await w.send({ type: 'LUNA_PAGE_CONFIG' });
   assert.equal(reply.ok, true);
   assert.equal(reply.result.target, 'en');
-  assert.deepEqual(Object.keys(reply.result), ['target']);
+  assert.deepEqual(Object.keys(reply.result), ['target', 'model', 'effort', 'concurrency']);
+  assert.equal(reply.result.concurrency, 12);
   assert.equal(w.jobs.length, 0);
 });
 
@@ -111,5 +113,21 @@ test('unpaired installations can save local preferences while service access sta
   assert.equal(w.storage.settings.target, 'ja'); assert.equal(w.storage.settings.token, '');
   assert.equal((await w.send({ type: 'LUNA_STATUS' }, own)).ok, false);
   assert.equal((await w.send({ type: 'LUNA_SAVE', settings: { token: 'bad' } }, own)).ok, false);
+  assert.equal(w.jobs.length, 0);
+});
+
+test('site rules persist across URLs, isolate hostnames and allow scoped removal', async () => {
+  const w = worker();
+  const saved = await w.send({ type: 'LUNA_RULE_SAVE', selector: 'article > div.author' });
+  assert.equal(saved.ok, true);
+  const same = await w.send({ type: 'LUNA_RULES' }, { tab: { id: 2 }, url: 'https://example.com/other' });
+  assert.equal(same.result.rules.length, 1);
+  const other = { tab: { id: 3 }, url: 'https://other.example.com/' };
+  assert.equal((await w.send({ type: 'LUNA_RULES' }, other)).result.rules.length, 0);
+  await w.send({ type: 'LUNA_RULE_DELETE', host: 'example.com', id: saved.result.id }, other);
+  assert.equal((await w.send({ type: 'LUNA_RULES' })).result.rules.length, 1);
+  await w.send({ type: 'LUNA_RULE_DELETE', id: saved.result.id });
+  assert.equal((await w.send({ type: 'LUNA_RULES' })).result.rules.length, 0);
+  assert.equal((await w.send({ type: 'LUNA_RULE_LIST' })).ok, false);
   assert.equal(w.jobs.length, 0);
 });

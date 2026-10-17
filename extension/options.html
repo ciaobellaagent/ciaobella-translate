@@ -4,7 +4,7 @@
   <aside class="sidebar">
     <a class="brand" href="#reading"><img src="icons/bella.png" alt=""><span>Luna<small>Ciao Bella · 双语阅读</small></span></a>
     <nav aria-label="设置分组"><a href="#reading">01 <span>阅读与翻译</span></a><a href="#account">02 <span>订阅与连接</span></a><a href="#prompt-section">03 <span>翻译说明</span></a><a href="#appearance">04 <span>页面按钮</span></a><a href="#cache-section">05 <span>缓存与空间</span></a></nav>
-    <p class="sidebar-note">把语言留给 Luna，<br>把注意力留给内容。</p><small class="version">Luna 0.5.1 · 本机运行</small>
+    <p class="sidebar-note">把语言留给 Luna，<br>把注意力留给内容。</p><small class="version">Luna 0.6.0 · 本机运行</small>
   </aside>
   <main class="settings-main">
     <header class="settings-heading"><div><span class="eyebrow">READING, IN YOUR OWN WORDS</span><h1>读世界，按你的方式。</h1><p class="intro">语言、翻译习惯和一点小小的个性，都在这里。</p></div><img src="icons/bella.png" alt="Ciao Bella · Luna 文／A 翻译图标" class="hero-icon"></header>
@@ -13,6 +13,10 @@
       <label class="setting-row"><span><strong>译文语言</strong><small>原文保留在上方，译文跟随每个段落。</small></span><select id="target"><option value="zh-CN">简体中文</option><option value="zh-TW">繁體中文</option><option value="en">English</option><option value="ja">日本語</option><option value="ko">한국어</option><option value="fr">Français</option><option value="de">Deutsch</option><option value="es">Español</option></select></label>
       <label class="setting-row"><span><strong>重读时恢复已有译文</strong><small>滚动、展开继续读取本机缓存；没有缓存的内容等你点击翻译。</small></span><input id="autoRestore" type="checkbox" role="switch"></label>
       <button class="primary compact" type="button" id="save-reading">保存阅读偏好 <span>↗</span></button>
+      <label class="setting-row"><span><strong>同时翻译的批数</strong><small>本机所有标签页共用。默认 12；可设 1–24。每批最多 4 段，优先处理屏幕内的内容。</small></span><input id="concurrency" class="service-control" type="number" min="1" max="24" step="1" value="12" style="width:90px" disabled></label>
+      <button class="primary compact service-control" type="button" id="save-concurrency" disabled>保存并发量 <span>↗</span></button>
+      <p class="helper">保存后立即调整。降低上限时，已开始的请求会完成；遇到限流或超时，后台暂时减少并发。更多并发不保证更快。</p>
+      <details class="guide"><summary>不翻译的内容 · 网站规则</summary><p>在页面按钮旁点「⊘」选择内容，预览同类范围后保存。规则只用于对应网站；正文中被选中的片段保留原样。</p><div id="site-rules"></div></details>
     </section>
     <section class="setting-card" id="account"><div class="section-title"><span class="section-number">02</span><h2>订阅与连接</h2><span class="tag">CODEX</span></div>
       <div class="account-card"><span class="dot" id="dot"></span><div><strong id="connection">正在检查本机服务…</strong><p id="account-detail">检查连接不会发起翻译，也不会消耗模型额度。</p></div><button class="secondary" id="test" type="button">重新检测</button></div>
