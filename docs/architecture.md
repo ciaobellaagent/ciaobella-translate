@@ -12,6 +12,8 @@ User activates translation
 
 The content script prefetches within 500px of the viewport, coalesces DOM changes, and skips controls, hidden text, code blocks, and its own output. Requests are bounded; stopping or restoring the page prevents late replies from being rendered. One already-submitted batch may finish and be cached.
 
+On `x.com` / `twitter.com` and their subdomains, the extractor only considers recognized readable regions: `tweetText` and `UserDescription` are atomic blocks, and `longformRichTextComponent` retains normal block ownership. Inline divs inside posts, including @mentions, are read with the entire post and never receive their own translation or progress node. Author regions, timestamps, buttons, and other interface areas are excluded. A standalone handle is not translated. Nested mutations rescan the atomic post root; responses are checked again before insertion in case the site recycled a node. Outside X, the general block extractor remains in use. Unsupported X regions remain original rather than falling back to translating every interface div.
+
 ## Models and settings
 
 The default pair is `gpt-6-luna` / `medium`. `model/list` supplies picker-visible text models and their supported reasoning levels. Agent-delegating Ultra is excluded because this translation engine disables tools and delegation. Availability in a model list is not a successful inference check; the actual thread/model/provider are checked and access errors are surfaced without fallback.

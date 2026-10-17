@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.1 — 2026-10-17
+
+- Fix X / Twitter author names, handles, and inline mentions being treated as separate paragraphs and receiving block translations that disrupt the original layout.
+- Read post bodies and profile bios as complete units, retain paragraph boundaries in recognized long-form regions, and exclude author/UI metadata and standalone handles.
+- Apply the same boundaries to cache restoration and dynamic updates; reject late insertions into recycled metadata nodes. Existing source links and text stay in place.
+- Add an authored social-timeline fixture and six jsdom regression scenarios. jsdom is a test-only development dependency; runtime and distributed extension stay dependency-free.
+
+Validation uses the actual content script with a simulated DOM, viewport, and model transport. It does not establish live X or Chromium pixel-layout compatibility.
+
 ## 0.5.0 — 2026-10-16
 
 First public source release of Ciao Bella Translate (Luna 沉浸翻译).

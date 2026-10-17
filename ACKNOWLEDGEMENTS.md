@@ -18,7 +18,7 @@ This repository grew out of the author's local bilingual-reading prototype. The 
 
 The Ciao Bella character and wordmark originate from the author's developer identity. The adopted translator derivative is **08 · Symbol First**, generated with OpenAI's built-in image generation tool using that identity as the reference. See [artwork, prompt, and conversion provenance](docs/branding/README.md). No Google, Apple, Microsoft, DeepL, or Immersive Translate logo is used in the extension.
 
-The UI uses system fonts such as Georgia and PingFang when available; no font files are redistributed. The application has no third-party npm runtime dependencies. Research tools and optional image-conversion utilities used during development are not runtime dependencies.
+The UI uses system fonts such as Georgia and PingFang when available; no font files are redistributed. The application has no third-party npm runtime dependencies. DOM regression tests use [jsdom 26.1.0](https://github.com/jsdom/jsdom/tree/26.1.0) ([MIT](https://github.com/jsdom/jsdom/blob/26.1.0/LICENSE.txt)), installed as a locked development dependency. jsdom and its transitive packages are not bundled in the extension or local bridge; their upstream notices remain with the installed packages. X site rules and fixtures are authored for this project using readable-region DOM attributes, without copied site JavaScript, captured posts, or styles. Research tools and optional image-conversion utilities used during development are not runtime dependencies.
 
 ## Adding third-party material
 

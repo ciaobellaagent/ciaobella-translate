@@ -1,8 +1,9 @@
 # Contributing
 
-Use Node.js 22 or newer. There is no npm install step for runtime code or the deterministic tests.
+Use Node.js 22 or newer. Runtime code needs no npm packages. Install the locked development dependencies for the deterministic tests; jsdom supplies DOM APIs without starting a browser or loading external webpages.
 
 ```sh
+npm ci --ignore-scripts
 npm run check
 npm test
 ```

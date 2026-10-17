@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Synthetic social timeline fixture</title>
+<!-- Authored regression fixture using X's DOM region names. No captured posts,
+     profile information, site JavaScript, or third-party styles are included. -->
+<style>
+body{font:16px/1.6 system-ui;margin:40px;background:#fff;color:#20252a}
+main{max-width:650px;margin:auto}article{border-bottom:1px solid #ddd;padding:24px 0}
+[data-testid="User-Name"]{display:flex;gap:8px;align-items:center}
+[data-testid="tweetText"]{margin-top:16px;white-space:pre-wrap;overflow-wrap:anywhere}
+.mention{display:inline-flex}a{color:#1678ac}button{font:inherit}
+</style>
+<main>
+  <article data-testid="tweet" id="post">
+    <div data-testid="User-Name" id="author">
+      <div><a href="/fixture_author"><span>Example Researcher</span></a></div>
+      <div><a href="/fixture_author"><span>@fixture_author</span></a></div>
+      <a href="/fixture_author/status/1"><time>24 minutes ago</time></a>
+    </div>
+    <div data-testid="tweetText" id="post-body"><span>We discussed the next release with </span><div class="mention" id="mention"><a href="/fixture_team">@fixture_team</a></div><span> and kept every original link in place.</span></div>
+    <div role="button" id="show-more">Show more of this post</div>
+    <div role="group" id="actions"><div role="button">Reply to this post</div><div role="button">Repost this update</div></div>
+  </article>
+  <article data-testid="tweet" id="chinese-post">
+    <div data-testid="User-Name"><div>Example Developer</div><div>@fixture_dev</div></div>
+    <div data-testid="tweetText" id="chinese-body"><span>刚看到 </span><div class="mention"><a href="/fixture_team">@fixture_team</a></div><span> 发布的新消息，测试页面里的原文和链接应该保持完整，不要单独给账号插入译文。</span></div>
+  </article>
+  <div data-testid="UserDescription" id="bio"><span>Building useful tools with </span><div class="mention"><a href="/fixture_team">@fixture_team</a></div><span> for readers everywhere.</span></div>
+  <div data-testid="longformRichTextComponent" id="longform">
+    <p id="article-first">An article paragraph keeps its own translation below the original text.</p>
+    <p id="article-second">The second paragraph remains a separate reading block.</p>
+  </div>
+  <div data-testid="tweetText" id="handle-only">@fixture_team</div>
+  <div id="sidebar"><div>People you may know</div><div>Trending topics for today</div></div>
+</main>
+</html>

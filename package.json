@@ -1,6 +1,6 @@
 {
   "name": "ciaobella-translate",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "license": "MIT",
   "repository": "github:ciaobellaagent/ciaobella-translate",
   "type": "module",
@@ -11,5 +11,10 @@
     "check": "node scripts/check.mjs",
     "package": "node scripts/package.mjs"
   },
-  "engines": { "node": ">=22" }
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "jsdom": "26.1.0"
+  }
 }

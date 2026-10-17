@@ -16,6 +16,7 @@ The extension is currently named **Luna 沉浸翻译**. The local bridge, Chromi
 - Local cache: 7 / 30 / 90 days, 8 / 16 / 32 MiB, at most 10,000 fragments. Model, effort, languages, text, and instructions separate cache identities.
 - Reopening a previously translated page restores available nearby cached translations. Missing content is translated only after you activate translation.
 - Errors and limits pause translation. The selected model is checked; there is no automatic fallback to another model or translation provider.
+- X / Twitter: translate each post or bio as a whole, including inline mentions; keep author names, handles, timestamps, action rows, and other interface text untouched. Recognized long-form article regions keep paragraph boundaries.
 
 ## Quick start
 
@@ -64,15 +65,16 @@ Only the official Codex process reads and refreshes ChatGPT credentials. The ext
 
 ## Scope and verification
 
-The initial implementation was tried in a dedicated Chrome instance and loaded manually in Brave. The current model-selection work is covered by deterministic tests and a local App Server check; this is not a claim of compatibility with every website or browser. PDF, image OCR, video subtitles, iframe / Shadow DOM text, store pages, and browser internal pages are outside the current scope.
+The initial implementation was tried in a dedicated Chrome instance and loaded manually in Brave. Model selection has deterministic tests and a local App Server check. The X layout fix has synthetic DOM coverage and has not been checked live on X; this is not a claim of compatibility with every website or browser. PDF, image OCR, video subtitles, iframe / Shadow DOM text, store pages, and browser internal pages are outside the current scope.
 
 ```sh
+npm ci --ignore-scripts # development/test dependencies only
 npm run check
 npm test
 npm run package
 ```
 
-Tests use Node's built-in runner and mock model responses. They do not spend subscription usage. Real model checks are separate and opt-in. Architecture, settings semantics, and cache migration are documented in [docs/architecture.md](docs/architecture.md).
+Tests use Node's built-in runner, jsdom for synthetic DOM scenarios, and mock model responses. They do not spend subscription usage. The X fixture is authored test markup, not a captured webpage; DOM tests do not prove the current live site's pixel layout. Real browser/model checks are separate and opt-in. Architecture, settings semantics, and cache migration are documented in [docs/architecture.md](docs/architecture.md).
 
 ## Sources, license, and contributing
 

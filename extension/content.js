@@ -4,7 +4,14 @@
   const MARK = 'data-luna-translation';
   const EXCLUDE = 'script,style,noscript,pre,code,kbd,textarea,input,select,button,svg,math,canvas,video,audio,nav,header,footer,[hidden],[contenteditable]:not([contenteditable="false"]),[translate="no"],[aria-hidden="true"],[data-luna-ui],[' + MARK + ']';
   const TEXT_EXCLUDE = EXCLUDE.replace('pre,code,kbd,', 'pre,');
-  const CANDIDATES = 'p,h1,h2,h3,h4,h5,h6,li,blockquote,td,th,dd,dt,figcaption,div,section,article';
+  const ON_X = /(^|\.)(x\.com|twitter\.com)$/.test(location.hostname);
+  // X uses nested divs for inline mentions and its author row. Only readable
+  // regions own translations; atomic post/bio roots retain their inline text.
+  // These selectors and the synthetic test fixture are independently authored.
+  const X_ATOMIC = '[data-testid="tweetText"],[data-testid="UserDescription"]';
+  const X_ARTICLE = '[data-testid="longformRichTextComponent"]';
+  const X_METADATA = '[data-testid="User-Name"],[data-testid="UserName"],[data-testid="socialContext"],time,[role="button"]';
+  const CANDIDATES = 'p,h1,h2,h3,h4,h5,h6,li,blockquote,td,th,dd,dt,figcaption,div,section,article' + (ON_X ? ',' + X_ATOMIC : '');
   let running = false, busy = false, preparing = false, epoch = 0, target = 'zh-CN', errorText = '', scanTimer;
   let cacheOnly = false, remembered = false, activePage = '', lastHref = location.href;
   let restoreRevision = 0;
@@ -29,13 +36,23 @@
     positionButton();
   }
 
+  function eligible(element) {
+    if (element.closest(EXCLUDE)) return false;
+    if (!ON_X) return true;
+    if (element.closest(X_METADATA)) return false;
+    const atomic = element.closest(X_ATOMIC);
+    return atomic ? atomic === element : Boolean(element.closest(X_ARTICLE));
+  }
+
   function sourceText(element) {
+    const atomic = ON_X && element.matches(X_ATOMIC);
     const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
       acceptNode: node => {
-        if (node.parentElement?.closest(TEXT_EXCLUDE)) return NodeFilter.FILTER_REJECT;
+        if (node.parentElement?.closest(TEXT_EXCLUDE) || (ON_X && node.parentElement?.closest(X_METADATA))) return NodeFilter.FILTER_REJECT;
         // Each block owns only its text outside nested blocks. Mixed containers
-        // can retain their direct text while new child paragraphs translate once.
-        if (node.parentElement?.closest(CANDIDATES) !== element) return NodeFilter.FILTER_REJECT;
+        // retain direct text; X post/bio roots instead own nested inline divs.
+        const owner = node.parentElement?.closest(atomic ? X_ATOMIC : CANDIDATES);
+        if (owner !== element) return NodeFilter.FILTER_REJECT;
         for (let parent = node.parentElement; parent; parent = parent.parentElement) {
           const style = getComputedStyle(parent);
           if (style.display === 'none' || style.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
@@ -50,6 +67,7 @@
   }
 
   function needsTranslation(text) {
+    if (/^@[\p{L}\p{N}_]+$/u.test(text)) return false;
     if (text.length < 8 || !/\p{L}/u.test(text)) return false;
     const letters = text.match(/\p{L}/gu)?.length || 1;
     const chinese = text.match(/\p{Script=Han}/gu)?.length || 0;
@@ -216,7 +234,7 @@
 
   function isNearby(record) {
     const element = record.element;
-    if (!record.visible || !element.isConnected || element.closest(EXCLUDE) ||
+    if (!record.visible || !element.isConnected || !eligible(element) ||
         element.getClientRects().length === 0 || getComputedStyle(element).visibility === 'hidden') return false;
     const box = element.getBoundingClientRect();
     return box.bottom >= -500 && box.top <= innerHeight + 500;
@@ -258,7 +276,7 @@
     for (const [element, record] of records) {
       if (!element.isConnected) { removeProgress(record); viewport.unobserve(element); records.delete(element); continue; }
       if (!candidates.has(element)) continue;
-      if (element.closest(EXCLUDE) || element.getClientRects().length === 0) {
+      if (!eligible(element) || element.getClientRects().length === 0) {
         removeProgress(record); removeTranslation(record); viewport.unobserve(element); records.delete(element); continue;
       }
       const text = sourceText(element);
@@ -274,7 +292,7 @@
       }
     }
     for (const element of candidates) {
-      if (records.has(element) || element.closest(EXCLUDE)) continue;
+      if (records.has(element) || !eligible(element)) continue;
       // Keep inline links and emphasis; sourceText excludes nested block content.
       if (element.getClientRects().length === 0 || getComputedStyle(element).visibility === 'hidden') continue;
       const text = sourceText(element);
@@ -319,7 +337,7 @@
     busy = true; update();
     const mine = epoch, language = target;
     const valid = ({ record, revision }) => records.get(record.element) === record && record.element.isConnected &&
-      record.revision === revision && sourceText(record.element) === record.source;
+      eligible(record.element) && record.revision === revision && sourceText(record.element) === record.source;
     const apply = ({ record, index }, text, cached) => {
       record.result[index] = text;
       if (cached) record.cachedParts.add(index);
@@ -418,8 +436,8 @@
   function queueScan(node) {
     const element = node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement;
     if (!element || ownNode(element)) return;
-    let root = element.matches(CANDIDATES) || element.querySelector(CANDIDATES) ? element :
-      element.closest(CANDIDATES) || element;
+    let root = (ON_X && element.closest(X_ATOMIC)) ||
+      (element.matches(CANDIDATES) || element.querySelector(CANDIDATES) ? element : element.closest(CANDIDATES) || element);
     // Include an existing parent record when its directly owned text changes.
     for (let parent = root.parentElement; parent && parent !== document.body; parent = parent.parentElement) {
       if (records.has(parent)) { root = parent; break; }
@@ -459,7 +477,7 @@
     }
   }).observe(document.documentElement, {
     childList: true, subtree: true, characterData: true, attributes: true,
-    attributeFilter: ['open', 'hidden', 'class', 'style', 'aria-expanded', 'aria-hidden'],
+    attributeFilter: ['open', 'hidden', 'class', 'style', 'aria-expanded', 'aria-hidden', 'data-testid', 'role'],
   });
   document.addEventListener('toggle', event => {
     if (running && event.target.tagName === 'DETAILS') queueScan(event.target);

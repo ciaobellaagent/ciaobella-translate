@@ -7,7 +7,7 @@ import { homedir } from 'node:os';
 
 export const MODEL = 'gpt-6-luna';
 export const DEFAULT_EFFORT = 'medium';
-export const VERSION = '0.5.0';
+export const VERSION = '0.5.1';
 // Ultra delegates to agents; this translation-only client does not execute tools.
 export const EFFORTS = new Set(['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
