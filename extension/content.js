@@ -65,6 +65,21 @@
     return null;
   }
 
+  function visuallyHidden(style) {
+    if (style.display === 'none' || ['hidden', 'collapse'].includes(style.visibility) || style.contentVisibility === 'hidden') return true;
+    if (!['absolute', 'fixed'].includes(style.position)) return false;
+    // Screen-reader-only labels remain in the DOM and are not display:none.
+    // Detect their rendered clipping, not a site-specific class or English text.
+    const width = parseFloat(style.width), height = parseFloat(style.height);
+    const tiny = width >= 0 && width <= 1 && height >= 0 && height <= 1;
+    const overflowClipped = [style.overflow, style.overflowX, style.overflowY].some(value => ['hidden', 'clip'].includes(value));
+    const rect = /^rect\(([^)]+)\)$/.exec(style.clip || '');
+    const edges = rect?.[1].split(/[,\s]+/).filter(Boolean).map(value => /^-?(?:\d+\.?\d*|\.\d+)(?:px)?$/.test(value) ? parseFloat(value) : NaN);
+    const emptyRect = edges?.length === 4 && edges.every(Number.isFinite) && (edges[2] <= edges[0] || edges[1] <= edges[3]);
+    const emptyInset = /^inset\(\s*(?:50%|100%)\s*\)$/.test(style.clipPath || '');
+    return emptyRect || emptyInset || (tiny && overflowClipped);
+  }
+
   function sourceText(element, kept) {
     const atomic = ON_X && element.matches(X_ATOMIC);
     const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
@@ -76,8 +91,7 @@
         if (owner !== element) return NodeFilter.FILTER_REJECT;
         for (let parent = node.parentElement; parent; parent = parent.parentElement) {
           const style = getComputedStyle(parent);
-          if (style.display === 'none' || style.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
-          if (parent === element) break;
+          if (visuallyHidden(style)) return NodeFilter.FILTER_REJECT;
         }
         return NodeFilter.FILTER_ACCEPT;
       },

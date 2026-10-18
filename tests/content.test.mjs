@@ -273,3 +273,36 @@ test('semantic paragraphs and headings remain readable when a site styles them w
   p.action('start'); await until(() => p.action('status').translated === 2);
   assert(p.document.querySelector('#flex > ' + MARK)); assert(p.document.querySelector('#grid > ' + MARK));
 });
+
+test('headings omit screen-reader-only anchor labels but preserve visible linked title text', async t => {
+  // Authored reduced fixture for the sr-only link-label pattern observed on Vercel;
+  // no article copy, site CSS bundle or icon artwork is bundled here.
+  const html = `<style>.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip-path:inset(50%);white-space:nowrap;border-width:0}</style>
+    <h2 id="heading"><a href="#heading"><svg></svg><span class="sr-only">Copy link to heading</span></a>A clear <a href="/guide">article heading</a></h2>`;
+  const p = await page(t, { url: 'https://example.com/article', html });
+  const label = p.document.querySelector('.sr-only'), original = label.outerHTML;
+  p.action('start'); await until(() => p.document.querySelector('#heading > ' + MARK));
+  assert.deepEqual(p.texts('LUNA_CACHE'), ['A clear article heading']);
+  assert.deepEqual(p.texts('LUNA_TRANSLATE'), ['A clear article heading']);
+  assert(!p.document.querySelector(MARK).textContent.includes('Copy link'));
+  assert.equal(label.outerHTML, original, 'Accessibility text stays in the original DOM');
+  assert.equal(p.document.querySelector('a[href="/guide"]').textContent, 'article heading');
+});
+
+test('CSS clipping works without known class names and through a hidden ancestor', async t => {
+  const html = `<h2 id="heading"><span style="position:absolute;clip-path:inset(50%);">Hidden helper label</span>Only the visible heading</h2>
+    <div style="position:absolute;width:1px;height:1px;overflow:hidden"><p>Screen reader announcement only</p></div>
+    <p id="normal"><span class="sr-only">A class name without clipping</span> remains visible prose.</p>`;
+  const p = await page(t, { url: 'https://example.com', html });
+  p.action('start'); await until(() => p.action('status').translated === 2);
+  assert.deepEqual(p.texts('LUNA_TRANSLATE'), ['Only the visible heading', 'A class name without clipping remains visible prose.']);
+});
+
+test('a formerly clipped label is included when it actually becomes visible', async t => {
+  const p = await page(t, { url: 'https://example.com', html: '<h2 id="heading"><span id="helper" style="position:absolute;clip:rect(0px,0px,0px,0px)">Visible prefix </span>The article heading</h2>' });
+  p.action('start'); await until(() => p.document.querySelector(MARK));
+  assert.equal(p.texts('LUNA_TRANSLATE')[0], 'The article heading');
+  p.document.querySelector('#helper').removeAttribute('style');
+  await until(() => p.document.querySelector(MARK)?.textContent.includes('Visible prefix'));
+  assert(p.texts('LUNA_TRANSLATE').includes('Visible prefix The article heading'));
+});
