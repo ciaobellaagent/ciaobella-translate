@@ -18,7 +18,7 @@ function matches(a, b) {
 }
 
 export function createServer({ service, token, translator, settings = new SettingsStore(), port = PORT }) {
-  const jobs = new Map();
+  const jobs = new Map(), controllers = new Map();
   const cacheStatus = () => ({ cacheEntries: service.cache.size, cacheDays: service.ttl / 86400000,
     cacheBytes: service.cacheBytes, cacheMaxBytes: service.maxBytes, cacheMaxEntries: service.maxCache });
   return http.createServer(async (req, res) => {
@@ -55,10 +55,15 @@ export function createServer({ service, token, translator, settings = new Settin
       }
       if (req.method === 'GET' && url.pathname === '/status') {
         const connection = await (translator.status ? translator.status() : translator.start());
-        reply(200, { ...connection, model: service.model, effort: service.effort, pending: service.pending, requests: service.requests,
+        reply(200, { ...connection, model: service.model, effort: service.effort, pending: service.pending, active: service.active, queued: service.queue.length, concurrency: service.concurrency, effectiveConcurrency: service.effectiveConcurrency, requests: service.requests,
           accountConnected: connection.accountConnected ?? connection.authentication === 'chatgpt',
           cacheHits: service.cacheHits, ...cacheStatus(), promptRevision: settings.read().promptRevision,
           lastUsage: translator.lastUsage }); return;
+      }
+      if (req.method === 'POST' && /^\/jobs\/[a-f0-9]{32}\/cancel$/.test(url.pathname)) {
+        const id = url.pathname.split('/')[2];
+        controllers.get(id)?.abort();
+        reply(200, { cancelled: true }); return;
       }
       if (req.method === 'GET' && /^\/jobs\/[a-f0-9]{32}$/.test(url.pathname)) {
         const job = jobs.get(url.pathname.split('/').pop());
@@ -91,11 +96,13 @@ export function createServer({ service, token, translator, settings = new Settin
       if (url.pathname === '/cache') { reply(200, service.lookup(body)); return; }
       if (url.pathname === '/jobs') {
         for (const [id, job] of jobs) if (Date.now() - job.at > 600000) jobs.delete(id);
-        if (jobs.size >= 100 || service.pending >= 16) throw new HttpError(429, '翻译队列已满，请稍后重试。');
+        if (jobs.size >= 256) for (const [id, job] of jobs) { if (job.finishedAt && Date.now() - job.finishedAt > 60000) jobs.delete(id); }
+        if (jobs.size >= 512) throw new HttpError(429, '翻译队列已满，请稍后重试。');
         const id = randomBytes(16).toString('hex');
+        const controller = new AbortController(); controllers.set(id, controller);
         const job = { state: 'pending', at: Date.now() }; jobs.set(id, job);
-        service.translate(body).then(result => Object.assign(job, { state: 'completed', result }),
-          error => Object.assign(job, { state: 'failed', error: error.message }));
+        service.translate(body, { signal: controller.signal, priority: body.priority }).then(result => Object.assign(job, { state: 'completed', result, finishedAt: Date.now() }),
+          error => Object.assign(job, { state: 'failed', error: error.message, finishedAt: Date.now() })).finally(() => controllers.delete(id));
         reply(202, { id }); return;
       }
       reply(200, await service.translate(body));

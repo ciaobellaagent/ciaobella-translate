@@ -3,7 +3,7 @@ import { mkdir, readFile, writeFile, rename } from 'node:fs/promises';
 import { join } from 'node:path';
 import { MODEL, DEFAULT_EFFORT, EFFORTS, INSTRUCTIONS } from './codex.mjs';
 
-export const DEFAULT_SETTINGS = Object.freeze({ model: MODEL, effort: DEFAULT_EFFORT, supplementalPrompt: '', cacheDays: 30, cacheMaxBytes: 32 * 1024 * 1024 });
+export const DEFAULT_SETTINGS = Object.freeze({ model: MODEL, effort: DEFAULT_EFFORT, concurrency: 12, supplementalPrompt: '', cacheDays: 30, cacheMaxBytes: 32 * 1024 * 1024 });
 const fields = new Set(Object.keys(DEFAULT_SETTINGS));
 
 export function promptRevision(prompt = '', model = MODEL, effort = DEFAULT_EFFORT) {
@@ -19,6 +19,7 @@ export function validateSettings(patch) {
   if ('supplementalPrompt' in patch && (typeof patch.supplementalPrompt !== 'string' || [...patch.supplementalPrompt].length > 4000)) {
     invalid('补充翻译 Prompt 最多 4000 个字符。');
   }
+  if ('concurrency' in patch && (!Number.isInteger(patch.concurrency) || patch.concurrency < 1 || patch.concurrency > 24)) invalid('并发量必须是 1–24 的整数。');
   if ('cacheDays' in patch && ![7, 30, 90].includes(patch.cacheDays)) invalid('缓存期限仅支持 7、30 或 90 天。');
   if ('cacheMaxBytes' in patch && ![8, 16, 32].map(n => n * 1024 * 1024).includes(patch.cacheMaxBytes)) {
     invalid('缓存容量仅支持 8、16 或 32 MiB。');

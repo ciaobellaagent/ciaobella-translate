@@ -4,6 +4,8 @@ const TARGETS = new Set(['zh-CN', 'zh-TW', 'en', 'ja', 'ko', 'fr', 'de', 'es']);
 const CACHE_AGE = 30 * 86400000;
 let pageWrites = Promise.resolve();
 let preferenceWrites = Promise.resolve();
+let ruleWrites = Promise.resolve();
+const pageJobs = new Map();
 
 function extensionPage(sender) {
   if (!sender.url?.startsWith(chrome.runtime.getURL(''))) throw new Error('此操作只能由扩展设置页发起。');
@@ -78,10 +80,22 @@ async function request(path, body, timeout = 10000) {
   return result;
 }
 
-async function translate(texts, target) {
-  const job = await request('/jobs', { text_list: texts, target_lang: target, source_lang: 'auto' });
+async function schedulerSettings() {
+  const { model, effort, concurrency } = await request('/settings');
+  return { model, effort, concurrency };
+}
+
+async function translate(texts, target, sender, message) {
+  const key = `${sender.tab.id}:${sender.frameId || 0}:${message.requestId}`;
+  if (pageJobs.has(key)) throw new Error('重复的页面任务。');
+  const state = { cancelled: false }; pageJobs.set(key, state);
+  try {
+  const job = await request('/jobs', { text_list: texts, target_lang: target, source_lang: 'auto', priority: message.priority === 1 ? 1 : 0 });
+  state.id = job.id;
+  if (state.cancelled) { await request(`/jobs/${job.id}/cancel`, {}); throw new Error('翻译已取消。'); }
   const until = Date.now() + 180000;
   while (Date.now() < until) {
+    if (state.cancelled) throw new Error('翻译已取消。');
     // A short fetch plus an extension API call keeps the worker alive while queued.
     await chrome.storage.local.get('settings');
     const status = await request(`/jobs/${job.id}`);
@@ -89,14 +103,16 @@ async function translate(texts, target) {
     if (status.state === 'completed') return status.result;
     await new Promise(resolve => setTimeout(resolve, 650));
   }
+  await request(`/jobs/${job.id}/cancel`, {});
   throw new Error('翻译等待超时，已暂停；请稍后重试。');
+  } finally { pageJobs.delete(key); }
 }
 
 async function tabAction(tabId, action) {
   if (!tabId) throw new Error('没有可操作的网页。');
   await chrome.scripting.executeScript({ target: { tabId }, files: ['content.js'] });
-  const config = await settings();
-  return chrome.tabs.sendMessage(tabId, { type: 'LUNA_PAGE', action, target: config.target });
+  const config = { ...await settings(), ...await schedulerSettings() };
+  return chrome.tabs.sendMessage(tabId, { type: 'LUNA_PAGE', action, target: config.target, concurrency: config.concurrency, model: config.model, effort: config.effort });
 }
 
 chrome.runtime.onMessage.addListener((message, sender, respond) => {
@@ -106,7 +122,50 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
       case 'LUNA_TRANSLATE':
         if (!sender.tab || !/^https?:/.test(sender.url || '')) throw new Error('只接受网页翻译请求。');
         if (!TARGETS.has(message.target)) throw new Error('目标语言无效，请刷新网页后重试。');
-        return translate(message.texts, message.target);
+        return translate(message.texts, message.target, sender, message);
+      case 'LUNA_CANCEL': {
+        if (!sender.tab || !/^https?:/.test(sender.url || '')) throw new Error('取消请求无效。');
+        const key = `${sender.tab.id}:${sender.frameId || 0}:${message.requestId}`;
+        const job = pageJobs.get(key);
+        if (job) { job.cancelled = true; if (job.id) await request(`/jobs/${job.id}/cancel`, {}); }
+        return { cancelled: true };
+      }
+      case 'LUNA_RULES': {
+        if (!sender.tab || !/^https?:/.test(sender.url || '')) throw new Error('页面请求无效。');
+        await ruleWrites;
+        const host = new URL(sender.url).hostname;
+        return { host, rules: (await chrome.storage.local.get('siteRules')).siteRules?.[host] || [] };
+      }
+      case 'LUNA_RULE_SAVE': {
+        if (!sender.tab || !/^https?:/.test(sender.url || '')) throw new Error('页面请求无效。');
+        const selector = message.selector;
+        if (typeof selector !== 'string' || !selector || selector.length > 300 || /[{}\\(),*+~:]/.test(selector)) throw new Error('排除范围无效。');
+        const host = new URL(sender.url).hostname;
+        const task = ruleWrites.catch(() => {}).then(async () => {
+          const sites = (await chrome.storage.local.get('siteRules')).siteRules || {};
+          const rules = sites[host] || [];
+          const existing = rules.find(rule => rule.selector === selector);
+          if (existing) return { ...existing, created: false };
+          if (rules.length >= 30 || (!sites[host] && Object.keys(sites).length >= 100)) throw new Error('排除规则已达上限，请在设置中清理。');
+          const rule = { id: crypto.randomUUID(), selector, at: Date.now() };
+          await chrome.storage.local.set({ siteRules: { ...sites, [host]: [...rules, rule] } });
+          return { ...rule, created: true };
+        });
+        ruleWrites = task.catch(() => {}); return task;
+      }
+      case 'LUNA_RULE_LIST': extensionPage(sender); await ruleWrites; return (await chrome.storage.local.get('siteRules')).siteRules || {};
+      case 'LUNA_RULE_DELETE': {
+        const ownHost = sender.tab && /^https?:/.test(sender.url || '') ? new URL(sender.url).hostname : null;
+        if (!ownHost) extensionPage(sender);
+        const host = ownHost || message.host;
+        const task = ruleWrites.catch(() => {}).then(async () => {
+          const sites = (await chrome.storage.local.get('siteRules')).siteRules || {};
+          const rules = (sites[host] || []).filter(rule => rule.id !== message.id);
+          if (rules.length) sites[host] = rules; else delete sites[host];
+          await chrome.storage.local.set({ siteRules: sites }); return { removed: true };
+        });
+        ruleWrites = task.catch(() => {}); return task;
+      }
       case 'LUNA_CACHE':
         if (!sender.tab || !/^https?:/.test(sender.url || '') || !TARGETS.has(message.target)) throw new Error('缓存请求无效。');
         return request('/cache', { text_list: message.texts, target_lang: message.target, source_lang: 'auto' });
@@ -116,14 +175,15 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         await pageWrites;
         const { target, autoRestore } = await settings();
         const page = (await chrome.storage.local.get('translatedPages')).translatedPages?.[key];
-        return { target, restore: autoRestore && recentPage(page) && page.target === target };
+        const config = await schedulerSettings().catch(() => ({}));
+        return { ...config, target, restore: autoRestore && recentPage(page) && page.target === target };
       }
       case 'LUNA_REMEMBER':
         if (!sender.tab || !/^https?:/.test(sender.url || '') || !TARGETS.has(message.target) || (sender.frameId && sender.frameId !== 0)) throw new Error('页面记录无效。');
         return rememberPage(sender, message.target);
       case 'LUNA_PAGE_CONFIG':
         if (!sender.tab || !/^https?:/.test(sender.url || '')) throw new Error('只接受网页设置请求。');
-        return { target: (await settings()).target };
+        return { target: (await settings()).target, ...await schedulerSettings() };
       case 'LUNA_UI_CONFIG':
         if (!sender.tab || !/^https?:/.test(sender.url || '')) throw new Error('页面请求无效。');
         return uiSettings(await settings());
@@ -142,6 +202,7 @@ chrome.runtime.onMessage.addListener((message, sender, respond) => {
         extensionPage(sender);
         const before = await request('/settings');
         const result = await request('/settings', message.settings);
+        if (before.concurrency !== result.concurrency) await chrome.storage.local.set({ schedulerConfig: { concurrency: result.concurrency } });
         if (before.promptRevision !== result.promptRevision) await chrome.storage.local.set({ bridgeRevision: Date.now() });
         return result;
       }

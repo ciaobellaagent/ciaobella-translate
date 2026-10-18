@@ -73,6 +73,7 @@ async function optionsPage({ catalogError } = {}) {
       const request = structuredClone(message);
       calls.push(request);
       switch (request.type) {
+        case 'LUNA_RULE_LIST': return { ok: true, result: {} };
         case 'LUNA_SETTINGS': return { ok: true, result: { ...local } };
         case 'LUNA_STATUS': return { ok: true, result: status() };
         case 'LUNA_SERVICE_SETTINGS': return { ok: true, result: { ...service } };
@@ -270,4 +271,17 @@ test('an unavailable saved effort stays visible and cannot silently become a dif
   assert.equal(page.element('save-model').disabled, true);
   assert.match(page.element('model-help').textContent, /当前不可用/);
   await page.edit('effort', 'medium', 'change'); assert.equal(page.element('save-model').disabled, false);
+});
+
+test('concurrency validates and preserves unsaved edits across rechecks and saves', async () => {
+  const p = await optionsPage();
+  assert.equal(p.element('concurrency').value, '12');
+  await p.edit('concurrency', 8); await p.click('test'); assert.equal(p.element('concurrency').value, '8');
+  await p.click('save-concurrency'); assert.equal(p.service.concurrency, 8);
+  await p.edit('concurrency', 25); await p.click('save-concurrency');
+  assert.equal(p.service.concurrency, 8); assert.match(p.element('notice').textContent, /1–24/);
+  await p.edit('concurrency', 4);
+  const hold = p.holdNextSave(), save = p.click('save-concurrency'); await hold.requested;
+  await p.edit('concurrency', 16); hold.release(); await save;
+  assert.equal(p.service.concurrency, 4); assert.equal(p.element('concurrency').value, '16');
 });

@@ -12,7 +12,9 @@ The extension is currently named **Luna 沉浸翻译**. The local bridge, Chromi
 
 - Bilingual paragraphs with viewport-based batching, scrolling, expansion, and dynamic-content discovery.
 - A draggable edge-docked button, per-paragraph waiting/processing indicators, pause, and restore-original controls.
-- Configurable model, thinking effort, target language, supplemental translation instructions, and cache limits.
+- Configurable model, thinking effort, target language, supplemental translation instructions, cache limits, and **1–24 concurrent batches (default 12)** shared across tabs.
+- Small batches (up to four fragments), visible-content priority, in-flight deduplication, and cancellation of obsolete queued work.
+- A visual exclusion picker: preview matching elements, remember a hostname rule or ignore one element, and undo. Inline excluded text and @handles stay unchanged within translated prose.
 - Local cache: 7 / 30 / 90 days, 8 / 16 / 32 MiB, at most 10,000 fragments. Model, effort, languages, text, and instructions separate cache identities.
 - Reopening a previously translated page restores available nearby cached translations. Missing content is translated only after you activate translation.
 - Errors and limits pause translation. The selected model is checked; there is no automatic fallback to another model or translation provider.
@@ -42,6 +44,9 @@ The legacy runtime name is retained so existing installations keep their pairing
 3. Open a normal webpage and click the Ciao Bella **文／A** button. Hover or focus it to see progress, settings, and restore-original controls. The shortcut is `⌥⇧L` on macOS.
 4. Open the extension's **Settings** to change model and thinking effort. Saving a new configuration resets open-page translations in that browser; click Translate again. Other browsers need their reading pages refreshed.
 
+5. **Settings → 阅读与翻译 → 同时翻译的批数** changes the shared concurrency limit immediately. Existing requests finish when lowering the limit.
+6. Hover the page button and click **⊘** to select content to leave untranslated. Review the highlighted matches, then save for this hostname or ignore only this occurrence. Use Undo immediately, or remove saved rules in Settings → 阅读与翻译 → 不翻译的内容.
+
 The paired directory contains a local connection credential. Do not redistribute it. `npm run package` creates an **unpaired** ZIP in `deliverables/`; every user must run their own bridge and use their own Codex login.
 
 ## Updating and stopping
@@ -65,7 +70,7 @@ Only the official Codex process reads and refreshes ChatGPT credentials. The ext
 
 ## Scope and verification
 
-The initial implementation was tried in a dedicated Chrome instance and loaded manually in Brave. Model selection has deterministic tests and a local App Server check. The X layout fix has synthetic DOM coverage and has not been checked live on X; this is not a claim of compatibility with every website or browser. PDF, image OCR, video subtitles, iframe / Shadow DOM text, store pages, and browser internal pages are outside the current scope.
+The initial implementation was tried in a dedicated Chrome instance and loaded manually in Brave. Model selection has deterministic tests and a local App Server check. The X layout fix and the v0.6 visual picker/scheduler have synthetic DOM coverage; the new UI has not yet been verified in a live browser. A separate Luna/medium backend benchmark exercised 1/4/8/12 concurrency with no errors, but does not establish a universal account limit; this is not a claim of compatibility with every website or browser. PDF, image OCR, video subtitles, iframe / Shadow DOM text, store pages, and browser internal pages are outside the current scope.
 
 ```sh
 npm ci --ignore-scripts # development/test dependencies only

@@ -30,7 +30,7 @@ function placeholders(text) {
 }
 
 export class TranslationService {
-  constructor(translator, { runtime, maxCache = 10000, maxBytes = 32 * 1024 * 1024, cacheDays = 30, supplementalPrompt = '', model = MODEL, effort = DEFAULT_EFFORT, now = Date.now } = {}) {
+  constructor(translator, { runtime, maxCache = 10000, maxBytes = 32 * 1024 * 1024, cacheDays = 30, supplementalPrompt = '', model = MODEL, effort = DEFAULT_EFFORT, concurrency = 12, now = Date.now } = {}) {
     this.translator = translator;
     this.runtime = runtime;
     this.maxCache = maxCache;
@@ -46,7 +46,12 @@ export class TranslationService {
     this.dirty = false;
     this.saveTimer = null;
     this.saveTail = Promise.resolve();
-    this.tail = Promise.resolve();
+    this.concurrency = concurrency;
+    this.active = 0;
+    this.queue = [];
+    this.inflight = new Map();
+    this.backoffUntil = 0;
+    this.backoffLimit = concurrency;
     this.pending = 0;
     this.requests = 0;
     this.cacheHits = 0;
@@ -75,12 +80,14 @@ export class TranslationService {
     return createHash('sha256').update(JSON.stringify(context)).digest('hex');
   }
 
-  setSettings({ supplementalPrompt = this.supplementalPrompt, model = this.model, effort = this.effort, cacheDays = this.ttl / 86400000, cacheMaxBytes = this.maxBytes } = {}) {
+  setSettings({ supplementalPrompt = this.supplementalPrompt, model = this.model, effort = this.effort, cacheDays = this.ttl / 86400000, cacheMaxBytes = this.maxBytes, concurrency = this.concurrency } = {}) {
     this.supplementalPrompt = supplementalPrompt;
     this.model = model;
     this.effort = effort;
     this.ttl = cacheDays * 86400000;
     this.maxBytes = cacheMaxBytes;
+    this.concurrency = concurrency;
+    this.drain();
     for (const [key, entry] of this.cache) if (!this.valid(entry)) this.remove(key);
     while (this.cache.size > this.maxCache || this.cacheBytes > this.maxBytes) this.remove(this.cache.keys().next().value);
   }
@@ -166,18 +173,50 @@ export class TranslationService {
     return result;
   }
 
-  async translate(body) {
+  get effectiveConcurrency() {
+    return this.now() < this.backoffUntil ? Math.min(this.concurrency, this.backoffLimit) : this.concurrency;
+  }
+
+  drain() {
+    while (this.active < this.effectiveConcurrency && this.queue.length) {
+      this.queue.sort((a, b) => a.priority - b.priority);
+      const job = this.queue.shift();
+      job.signal?.removeEventListener('abort', job.cancel);
+      this.active++;
+      this.run(job.input).then(job.resolve, error => {
+        if (/429|rate.?limit|quota|usage.?limit|timeout|timed? out|超时/i.test(error.message)) {
+          this.backoffLimit = Math.max(1, Math.floor(this.effectiveConcurrency / 2));
+          this.backoffUntil = this.now() + 30000;
+          clearTimeout(this.backoffTimer);
+          this.backoffTimer = setTimeout(() => this.drain(), 30010);
+          this.backoffTimer.unref?.();
+        }
+        job.reject(error);
+      }).finally(() => { this.active--; this.pending--; this.drain(); });
+    }
+  }
+
+  async translate(body, { signal, priority = 0 } = {}) {
     const input = { ...validateInput(body, this), model: this.model, effort: this.effort, prompt: this.supplementalPrompt, generation: this.generation };
+    if (signal?.aborted) throw new HttpError(499, '翻译已取消。');
     const cached = this.cached(input);
     if (cached.cached === input.texts.length) {
       this.cacheHits += cached.cached;
-      return cached; // Cache hits never wait behind another page's model request.
+      return cached;
     }
-    if (this.pending >= 16) throw new HttpError(429, '翻译队列已满，请稍后重试。');
+    if (this.pending >= 128) throw new HttpError(429, '翻译队列已满，请稍后重试。');
     this.pending++;
-    const job = this.tail.then(() => this.run(input));
-    this.tail = job.catch(() => {});
-    try { return await job; } finally { this.pending--; }
+    return new Promise((resolve, reject) => {
+      const job = { input, resolve, reject, signal, priority: priority === 1 ? 1 : 0 };
+      job.cancel = () => {
+        const index = this.queue.indexOf(job);
+        if (index < 0) return; // Running inference may finish and populate cache.
+        this.queue.splice(index, 1); this.pending--;
+        reject(new HttpError(499, '翻译已取消。'));
+      };
+      signal?.addEventListener('abort', job.cancel, { once: true });
+      this.queue.push(job); this.drain();
+    });
   }
 
   async run({ texts, target, source, model = this.model, effort = this.effort, prompt = this.supplementalPrompt, generation = this.generation }) {
@@ -191,23 +230,45 @@ export class TranslationService {
       if (entry) { hits++; results.set(key, entry.text); }
       else missing.set(key, texts[index]);
     });
-    if (missing.size) {
-      const values = [...missing.values()];
-      this.requests++;
-      const translated = await this.translator.translate(values, target, source, prompt, { model, effort });
-      if (!Array.isArray(translated) || translated.length !== values.length) throw new Error('翻译数量不匹配。');
-      translated.forEach((text, index) => {
-        if (typeof text !== 'string' || !text.trim()) throw new Error('翻译包含空段落。');
-        if (JSON.stringify(placeholders(values[index])) !== JSON.stringify(placeholders(text))) {
-          throw new Error('译文占位符缺失或改变，已停止显示；请重试。');
-        }
-      });
-      [...missing.keys()].forEach((key, i) => {
-        results.set(key, translated[i]);
-        // Clearing the cache must also cover requests already running or queued.
-        if (generation === this.generation) this.store(key, { text: translated[i], at: this.now() });
-      });
+    const owned = new Map(), waits = [];
+    for (const [key, text] of missing) {
+      const flightKey = `${generation}:${key}`;
+      let flight = this.inflight.get(flightKey);
+      if (!flight) {
+        let resolve, reject;
+        const promise = new Promise((yes, no) => { resolve = yes; reject = no; });
+        flight = { promise, resolve, reject, flightKey };
+        this.inflight.set(flightKey, flight); owned.set(key, { text, ...flight });
+      }
+      waits.push(flight.promise.then(text => results.set(key, text)));
     }
+    // Attach rejection handlers before invoking the provider. Overlapping callers
+    // share fragment promises, including failures, without leaking rejected promises.
+    const completed = Promise.all(waits);
+    const produce = async () => {
+      if (!owned.size) return;
+      try {
+        const values = [...owned.values()].map(item => item.text);
+        this.requests++;
+        const translated = await this.translator.translate(values, target, source, prompt, { model, effort });
+        if (!Array.isArray(translated) || translated.length !== values.length) throw new Error('翻译数量不匹配。');
+        translated.forEach((text, index) => {
+          if (typeof text !== 'string' || !text.trim()) throw new Error('翻译包含空段落。');
+          if (JSON.stringify(placeholders(values[index])) !== JSON.stringify(placeholders(text))) throw new Error('译文占位符缺失或改变，已停止显示；请重试。');
+        });
+        [...owned].forEach(([key, entry], index) => {
+          if (generation === this.generation) this.store(key, { text: translated[index], at: this.now() });
+          entry.resolve(translated[index]);
+        });
+      } catch (error) {
+        for (const entry of owned.values()) entry.reject(error);
+      } finally {
+        for (const entry of owned.values()) this.inflight.delete(entry.flightKey);
+      }
+    };
+    const outcomes = await Promise.allSettled([completed, produce()]);
+    const failed = outcomes.find(item => item.status === 'rejected');
+    if (failed) throw failed.reason;
     // Request-local results survive eviction while other pages perform lookups.
     const translations = keys.map(key => ({ text: results.get(key), detected_source_lang: source }));
     if (missing.size && this.runtime) await this.flush();

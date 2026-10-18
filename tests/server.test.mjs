@@ -17,7 +17,7 @@ async function fixture(t, translate = async texts => texts.map(x => '译文 ' + 
   await new Promise(r => server.listen(0, '127.0.0.1', r));
   t.after(() => { server.closeAllConnections(); server.close(); });
   const url = `http://127.0.0.1:${server.address().port}`;
-  return { calls: () => calls, request: (path, options = {}) => new Promise((resolve, reject) => {
+  return { service, calls: () => calls, request: (path, options = {}) => new Promise((resolve, reject) => {
     const req = http.request(url + path, { method: options.method || 'GET',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...options.headers } }, res => {
       let raw = ''; res.on('data', c => { raw += c; });
@@ -94,4 +94,21 @@ test('authenticated model choices persist and unsupported pairs fail without inf
   assert.equal((await (await f.request('/settings')).json()).effort, 'high');
   assert.equal((await f.request('/cache', { method: 'POST', body: JSON.stringify({ text_list: ['source'], model: 'gpt-6-luna' }) })).status, 400);
   assert.equal(f.calls(), 0);
+});
+
+
+test('authenticated cancellation removes queued work before inference', async t => {
+  let release;
+  const gate = new Promise(resolve => { release = resolve; });
+  const f = await fixture(t, async texts => { await gate; return texts; });
+  f.service.setSettings({ concurrency: 1 });
+  const submit = async text => (await (await f.request('/jobs', { method: 'POST', body: JSON.stringify({ text_list: [text] }) })).json()).id;
+  const first = await submit('running'), queued = await submit('queued');
+  const path = `/jobs/${queued}/cancel`;
+  assert.equal((await f.request(path, { method: 'POST', headers: { Authorization: 'bad' }, body: '{}' })).status, 401);
+  assert.equal((await f.request(path, { method: 'POST', body: '{}' })).status, 200);
+  assert.equal((await (await f.request(`/jobs/${queued}`)).json()).state, 'failed');
+  release();
+  assert.equal(f.calls(), 1);
+  assert.equal((await (await f.request(`/jobs/${first}`)).json()).state, 'completed');
 });

@@ -12,10 +12,14 @@
   const X_ARTICLE = '[data-testid="longformRichTextComponent"]';
   const X_METADATA = '[data-testid="User-Name"],[data-testid="UserName"],[data-testid="socialContext"],time,[role="button"]';
   const CANDIDATES = 'p,h1,h2,h3,h4,h5,h6,li,blockquote,td,th,dd,dt,figcaption,div,section,article' + (ON_X ? ',' + X_ATOMIC : '');
-  let running = false, busy = false, preparing = false, epoch = 0, target = 'zh-CN', errorText = '', scanTimer;
+  let running = false, preparing = false, epoch = 0, target = 'zh-CN', errorText = '', scanTimer;
   let cacheOnly = false, remembered = false, activePage = '', lastHref = location.href;
   let restoreRevision = 0;
   const records = new Map();
+  const batches = new Map();
+  let concurrency = 12, selectedModel = 'gpt-6-luna', selectedEffort = 'medium';
+  let siteRules = [], rulesLoaded = false;
+  const ignoredNodes = new Set();
   const dirtyRoots = new Set();
   const ownRemovals = new WeakSet();
   let host, badge, label, detail, restore;
@@ -37,33 +41,85 @@
   }
 
   function eligible(element) {
-    if (element.closest(EXCLUDE)) return false;
-    if (!ON_X) return true;
+    if (element.closest(EXCLUDE) || ignored(element)) return false;
+    if (!ON_X) {
+      if (element.closest('a,[role="button"],[role="menuitem"]')) return false;
+      const display = getComputedStyle(element).display;
+      return display !== 'inline' && (element.matches('p,h1,h2,h3,h4,h5,h6,blockquote,li,td,th,dd,dt,figcaption') || !/^(inline-)?(flex|grid)$/.test(display));
+    }
     if (element.closest(X_METADATA)) return false;
     const atomic = element.closest(X_ATOMIC);
     return atomic ? atomic === element : Boolean(element.closest(X_ARTICLE));
   }
 
-  function sourceText(element) {
+  function ignored(element) {
+    for (const node of ignoredNodes) if (node === element || node.contains(element)) return true;
+    return siteRules.some(rule => { try { return Boolean(element.closest(rule.selector)); } catch { return false; } });
+  }
+
+  function textOwner(element) {
+    if (ON_X) return element.closest(X_ATOMIC) || element.closest(CANDIDATES);
+    for (let current = element; current; current = current.parentElement) {
+      if (current.matches(CANDIDATES) && getComputedStyle(current).display !== 'inline') return current;
+    }
+    return null;
+  }
+
+  function visuallyHidden(style) {
+    if (style.display === 'none' || ['hidden', 'collapse'].includes(style.visibility) || style.contentVisibility === 'hidden') return true;
+    if (!['absolute', 'fixed'].includes(style.position)) return false;
+    // Screen-reader-only labels remain in the DOM and are not display:none.
+    // Detect their rendered clipping, not a site-specific class or English text.
+    const width = parseFloat(style.width), height = parseFloat(style.height);
+    const tiny = width >= 0 && width <= 1 && height >= 0 && height <= 1;
+    const overflowClipped = [style.overflow, style.overflowX, style.overflowY].some(value => ['hidden', 'clip'].includes(value));
+    const rect = /^rect\(([^)]+)\)$/.exec(style.clip || '');
+    const edges = rect?.[1].split(/[,\s]+/).filter(Boolean).map(value => /^-?(?:\d+\.?\d*|\.\d+)(?:px)?$/.test(value) ? parseFloat(value) : NaN);
+    const emptyRect = edges?.length === 4 && edges.every(Number.isFinite) && (edges[2] <= edges[0] || edges[1] <= edges[3]);
+    const emptyInset = /^inset\(\s*(?:50%|100%)\s*\)$/.test(style.clipPath || '');
+    return emptyRect || emptyInset || (tiny && overflowClipped);
+  }
+
+  function sourceText(element, kept) {
     const atomic = ON_X && element.matches(X_ATOMIC);
     const walker = document.createTreeWalker(element, NodeFilter.SHOW_TEXT, {
       acceptNode: node => {
         if (node.parentElement?.closest(TEXT_EXCLUDE) || (ON_X && node.parentElement?.closest(X_METADATA))) return NodeFilter.FILTER_REJECT;
         // Each block owns only its text outside nested blocks. Mixed containers
         // retain direct text; X post/bio roots instead own nested inline divs.
-        const owner = node.parentElement?.closest(atomic ? X_ATOMIC : CANDIDATES);
+        const owner = atomic ? node.parentElement?.closest(X_ATOMIC) : textOwner(node.parentElement);
         if (owner !== element) return NodeFilter.FILTER_REJECT;
         for (let parent = node.parentElement; parent; parent = parent.parentElement) {
           const style = getComputedStyle(parent);
-          if (style.display === 'none' || style.visibility === 'hidden') return NodeFilter.FILTER_REJECT;
-          if (parent === element) break;
+          if (visuallyHidden(style)) return NodeFilter.FILTER_REJECT;
         }
         return NodeFilter.FILTER_ACCEPT;
       },
     });
     let text = '', node;
-    while ((node = walker.nextNode())) text += node.textContent;
+    const protect = value => {
+      let token = `__LUNA_KEEP_${kept.length}__`;
+      while (element.textContent.includes(token) || kept.some(item => item.token === token)) token = token.replace('__LUNA_KEEP_', '__LUNA_KEEP_X');
+      kept.push({ token, value }); return token;
+    };
+    while ((node = walker.nextNode())) {
+      let value = node.textContent;
+      if (kept) value = ignored(node.parentElement) ? protect(value) : value.replace(/(?<![\w@])@[A-Za-z0-9_]{1,30}\b/g, protect);
+      text += value;
+    }
     return text.replace(/\s+/g, ' ').trim();
+  }
+
+  function prepareRecord(record) {
+    record.kept = []; record.claims = new Map();
+    record.parts = parts(sourceText(record.element, record.kept));
+  }
+
+  function hasTranslatableContent(element) {
+    const kept = [];
+    let text = sourceText(element, kept);
+    for (const item of kept) text = text.split(item.token).join('');
+    return needsTranslation(text);
   }
 
   function needsTranslation(text) {
@@ -82,6 +138,10 @@
       let cut = Math.max(text.lastIndexOf('. ', limit), text.lastIndexOf('。', limit), text.lastIndexOf(' ', limit));
       if (cut < limit / 2) cut = limit;
       else cut++;
+      for (const match of text.matchAll(/__LUNA_KEEP_[A-Z0-9]+__/g)) {
+        if (match.index < cut && match.index + match[0].length > cut) { cut = match.index || match[0].length; break; }
+        if (match.index >= cut) break;
+      }
       result.push(text.slice(0, cut)); text = text.slice(cut);
     }
     if (text) result.push(text);
@@ -127,7 +187,10 @@
     const settingsButton = document.createElement('button'); settingsButton.className = 'settings-button'; settingsButton.type = 'button';
     settingsButton.textContent = '⚙'; settingsButton.title = '阅读设置'; settingsButton.setAttribute('aria-label', '打开阅读设置');
     settingsButton.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'LUNA_OPEN_SETTINGS' }).catch(() => {}));
-    panel.append(copy, restore, settingsButton);
+    const excludeButton = document.createElement('button'); excludeButton.className = 'settings-button'; excludeButton.type = 'button';
+    excludeButton.textContent = '⊘'; excludeButton.title = '选择不翻译的内容'; excludeButton.setAttribute('aria-label', excludeButton.title);
+    excludeButton.addEventListener('click', startPicker);
+    panel.append(copy, excludeButton, restore, settingsButton);
     badge = document.createElement('button'); badge.type = 'button';
     badge.className = 'trigger';
     const glyph = document.createElement('img'); glyph.className = 'glyph'; glyph.alt = ''; glyph.draggable = false;
@@ -168,7 +231,7 @@
 
   function status() {
     const all = [...records.values()].filter(r => r.element.isConnected);
-    return { running, busy, preparing, cacheOnly, target, translated: all.filter(r => r.state === 'done').length,
+    return { running, busy: batches.size > 0, activeBatches: batches.size, concurrency, preparing, cacheOnly, target, translated: all.filter(r => r.state === 'done').length,
       cached: all.filter(r => r.state === 'done' && r.fromCache).length,
       checking: all.filter(r => r.state === 'checking').length,
       translating: all.filter(r => r.state === 'translating').length,
@@ -205,7 +268,7 @@
       const response = await chrome.runtime.sendMessage({ type: 'LUNA_PAGE_CONFIG' });
       if (mine !== epoch) return;
       if (!response?.ok) throw new Error(response?.error || '无法读取翻译设置。');
-      start(response.result.target);
+      applyScheduler(response.result); start(response.result.target);
     } catch (error) {
       if (mine === epoch) { errorText = error.message; update(); }
     } finally {
@@ -216,12 +279,14 @@
   // Viewport prefetch and incremental-observation design references (KISS and
   // open-immersive-translate) are identified in ACKNOWLEDGEMENTS.md. This code
   // retains source DOM and owns its own scheduling/cancellation semantics.
+  let pumpTimer;
+  function schedulePump() { if (!pumpTimer) pumpTimer = setTimeout(() => { pumpTimer = null; pump(); }, 16); }
   const viewport = new IntersectionObserver(entries => {
     for (const entry of entries) {
       const record = records.get(entry.target);
       if (record) record.visible = entry.isIntersecting;
     }
-    update(); pump();
+    update(); schedulePump();
   }, { rootMargin: '500px 0px' });
 
   function removeTranslation(record) {
@@ -280,12 +345,12 @@
         removeProgress(record); removeTranslation(record); viewport.unobserve(element); records.delete(element); continue;
       }
       const text = sourceText(element);
-      if (!needsTranslation(text)) {
+      if (!needsTranslation(text) || !hasTranslatableContent(element)) {
         removeProgress(record); removeTranslation(record); viewport.unobserve(element); records.delete(element); continue;
       }
       if (text !== record.source) {
         removeProgress(record); removeTranslation(record); record.node = null; record.source = text;
-        record.state = 'pending'; record.parts = parts(text); record.result = []; record.cachedParts.clear(); record.cacheMisses.clear(); record.revision++;
+        record.state = 'pending'; prepareRecord(record); record.result = []; record.cachedParts.clear(); record.cacheMisses.clear(); record.revision++;
       } else if (record.state === 'done' && (!record.node?.isConnected || record.node.parentElement !== element)) {
         // Frameworks can replace a block's children without changing the source.
         render(record);
@@ -296,18 +361,20 @@
       // Keep inline links and emphasis; sourceText excludes nested block content.
       if (element.getClientRects().length === 0 || getComputedStyle(element).visibility === 'hidden') continue;
       const text = sourceText(element);
-      if (!needsTranslation(text)) continue;
+      if (!needsTranslation(text) || !hasTranslatableContent(element)) continue;
       const record = { element, source: text, parts: parts(text), result: [], cachedParts: new Set(), cacheMisses: new Set(), state: 'pending', visible: false, revision: 0 };
-      records.set(element, record); viewport.observe(element);
+      prepareRecord(record); records.set(element, record); viewport.observe(element);
     }
-    update(); pump();
+    update(); schedulePump();
   }
 
   function render(record) {
     removeProgress(record); removeTranslation(record);
     const node = document.createElement('span'); node.setAttribute(MARK, ''); node.lang = target;
     node.style.cssText = 'display:block!important;margin:0.55em 0 0.8em!important;padding:0.1em 0 0.1em 0.85em!important;border-left:2px solid #b72c2660!important;color:inherit!important;opacity:0.91!important;font-size:0.96em!important;line-height:1.75!important;font-weight:400!important;white-space:pre-wrap!important;text-align:start!important;';
-    node.textContent = record.result.join('');
+    let translated = record.result.join('');
+    for (const { token, value } of record.kept) translated = translated.split(token).join(value);
+    node.textContent = translated;
     record.element.append(node); record.node = node; record.state = 'done';
     record.fromCache = record.parts.every((_, index) => record.cachedParts.has(index));
     if (!cacheOnly && !remembered && activePage === pageIdentity()) {
@@ -318,38 +385,71 @@
     }
   }
 
-  async function pump() {
-    if (checkPage() || !running || busy || errorText) return;
-    const jobs = [];
-    let characters = 0;
-    for (const record of records.values()) {
-      if (record.state === 'done' || !isNearby(record)) continue;
-      for (let index = 0; index < record.parts.length; index++) {
-        if (record.result[index] || (cacheOnly && record.cacheMisses.has(index))) continue;
-        const text = record.parts[index];
-        if (jobs.length >= 12 || characters + text.length > 6000) break;
-        jobs.push({ record, index, text, revision: record.revision }); characters += text.length;
-      }
-      if (jobs.length >= 12 || characters >= 5500) break;
+  function applyScheduler(config = {}) {
+    if ((config.model && config.model !== selectedModel) || (config.effort && config.effort !== selectedEffort)) reset();
+    if (Number.isInteger(config.concurrency) && config.concurrency >= 1 && config.concurrency <= 24) concurrency = config.concurrency;
+    if (config.model) selectedModel = config.model;
+    if (config.effort) selectedEffort = config.effort;
+  }
+
+  function priority(record) {
+    const box = record.element.getBoundingClientRect();
+    return box.bottom >= 0 && box.top <= innerHeight ? 0 : 1;
+  }
+
+  function cancelBatch(id, batch) {
+    batch.cancelled = true; batches.delete(id);
+    for (const { record, index } of batch.jobs) {
+      if (record.claims.get(index) === id) { record.claims.delete(index); if (record.state !== 'done') record.state = 'pending'; }
     }
-    if (!jobs.length) return;
-    for (const { record } of jobs) record.state = 'checking';
-    busy = true; update();
-    const mine = epoch, language = target;
-    const valid = ({ record, revision }) => records.get(record.element) === record && record.element.isConnected &&
-      eligible(record.element) && record.revision === revision && sourceText(record.element) === record.source;
+    chrome.runtime.sendMessage({ type: 'LUNA_CANCEL', requestId: id }).catch(() => {});
+  }
+
+  function pump() {
+    if (checkPage() || !running || !rulesLoaded || errorText) return;
+    for (const [id, batch] of batches) {
+      if (batch.jobs.every(job => !isNearby(job.record) || records.get(job.record.element) !== job.record || job.revision !== job.record.revision)) cancelBatch(id, batch);
+    }
+    while (batches.size < concurrency) {
+      const jobs = []; let characters = 0, rank;
+      const ordered = [...records.values()].filter(record => record.state !== 'done' && isNearby(record))
+        .sort((a, b) => priority(a) - priority(b));
+      for (const record of ordered) {
+        if (rank !== undefined && priority(record) !== rank) break;
+        for (let index = 0; index < record.parts.length; index++) {
+          if (record.result[index] || record.claims.has(index) || (cacheOnly && record.cacheMisses.has(index))) continue;
+          const text = record.parts[index];
+          if (jobs.length >= 4 || (jobs.length && characters + text.length > 6000)) break;
+          rank = priority(record); jobs.push({ record, index, text, revision: record.revision }); characters += text.length;
+        }
+        if (jobs.length >= 4 || characters >= 5500) break;
+      }
+      if (!jobs.length) break;
+      const id = crypto.randomUUID();
+      for (const { record, index } of jobs) { record.claims.set(index, id); record.state = 'checking'; }
+      const batch = { jobs, cancelled: false }; batches.set(id, batch);
+      executeBatch(id, batch, rank);
+    }
+    update();
+  }
+
+  async function executeBatch(id, batch, rank) {
+    const { jobs } = batch;
+    const mine = epoch, language = target, model = selectedModel, effort = selectedEffort;
+    const valid = ({ record, index, revision }) => record.claims.get(index) === id && records.get(record.element) === record &&
+      record.element.isConnected && eligible(record.element) && record.revision === revision && sourceText(record.element) === record.source;
+    const stale = () => checkPage() || mine !== epoch || !running || batch.cancelled;
     const apply = ({ record, index }, text, cached) => {
       record.result[index] = text;
       if (cached) record.cachedParts.add(index);
       if (record.parts.every((_, part) => Boolean(record.result[part]))) render(record);
     };
+    const matches = result => result?.model === model && (!result.effort || result.effort === effort);
     try {
       const cached = await chrome.runtime.sendMessage({ type: 'LUNA_CACHE', target: language, texts: jobs.map(job => job.text) });
-      if (checkPage() || mine !== epoch || !running) return;
-      if (!cached?.ok || cached.result?.model !== 'gpt-6-luna' || cached.result.translations?.length !== jobs.length ||
-          cached.result.translations.some(item => item !== null && (typeof item?.text !== 'string' || !item.text.trim()))) {
-        throw new Error(cached?.error || '无法读取本地译文缓存。');
-      }
+      if (stale()) return;
+      if (!cached?.ok || !matches(cached.result) || cached.result.translations?.length !== jobs.length ||
+          cached.result.translations.some(item => item !== null && (typeof item?.text !== 'string' || !item.text.trim()))) throw new Error(cached?.error || '无法读取本地译文缓存，请刷新设置后重试。');
       const missing = [];
       jobs.forEach((job, index) => {
         if (!valid(job)) return;
@@ -361,29 +461,200 @@
       if (cacheOnly || !missing.length) return;
       for (const { record } of missing) record.state = 'translating';
       update();
-      const response = await chrome.runtime.sendMessage({ type: 'LUNA_TRANSLATE', target: language, texts: missing.map(job => job.text) });
-      if (checkPage() || mine !== epoch || !running) return;
+      const response = await chrome.runtime.sendMessage({ type: 'LUNA_TRANSLATE', requestId: id, priority: rank, target: language, texts: missing.map(job => job.text) });
+      if (stale()) return;
       if (!response?.ok) throw new Error(response?.error || '翻译失败。');
       const texts = response.result.translations;
-      if (texts.length !== missing.length || response.result.model !== 'gpt-6-luna' ||
+      if (!Array.isArray(texts) || texts.length !== missing.length || !matches(response.result) ||
           texts.some(item => typeof item?.text !== 'string' || !item.text.trim())) throw new Error('翻译结果或模型不匹配。');
-      missing.forEach((job, index) => {
-        if (valid(job)) apply(job, texts[index].text, false);
-      });
+      missing.forEach((job, index) => { if (valid(job)) apply(job, texts[index].text, false); });
     } catch (error) {
-      if (mine === epoch) { stop(); errorText = error.message; }
+      if (!stale()) { stop(); errorText = error.message; }
     } finally {
-      for (const { record, revision } of jobs) {
-        if (record.revision === revision && ['translating', 'checking'].includes(record.state)) record.state = 'pending';
+      for (const { record, index } of jobs) if (record.claims.get(index) === id) {
+        record.claims.delete(index);
+        if (!record.claims.size && record.state !== 'done') record.state = 'pending';
       }
-      busy = false; update();
-      if (running) setTimeout(pump, 50);
+      if (batches.get(id) === batch) batches.delete(id);
+      update(); if (running) setTimeout(pump, 50);
     }
+  }
+
+  // Independent implementation of site-scoped visual exclusion. Product research
+  // and upstream documentation are credited in ACKNOWLEDGEMENTS.md.
+  let picker, pickerRoot, pickerText, pickerActions, pickerMarks, picked, choosing = false;
+  let candidateSelector = '', pickerSaving = false;
+
+  function refreshExclusions() {
+    for (const [element, record] of records) {
+      if (!element.isConnected || !eligible(element) || !hasTranslatableContent(element)) {
+        removeProgress(record); removeTranslation(record); viewport.unobserve(element); records.delete(element); continue;
+      }
+      const kept = [], next = parts(sourceText(element, kept));
+      if (JSON.stringify(next) !== JSON.stringify(record.parts) || JSON.stringify(kept) !== JSON.stringify(record.kept)) {
+        removeProgress(record); removeTranslation(record); record.node = null; record.revision++;
+        record.result = []; record.cachedParts.clear(); record.cacheMisses.clear(); record.state = 'pending'; prepareRecord(record);
+      }
+    }
+    if (running) scan(); else update();
+  }
+
+  function closePicker() {
+    choosing = false; picked = null; candidateSelector = '';
+    picker?.remove(); picker = null;
+    document.removeEventListener('pointermove', hoverPick, true);
+    document.removeEventListener('click', clickPick, true);
+    document.removeEventListener('keydown', keyPick, true);
+    window.removeEventListener('scroll', repaintPick);
+    window.removeEventListener('resize', repaintPick);
+  }
+
+  function pickerButton(text, fn, primary = false) {
+    const button = document.createElement('button'); button.type = 'button'; button.textContent = text;
+    if (primary) button.className = 'primary';
+    button.addEventListener('click', fn); return button;
+  }
+
+  function makePicker() {
+    picker = document.createElement('div'); picker.dataset.lunaUi = 'picker';
+    pickerRoot = picker.attachShadow({ mode: 'open' });
+    const style = document.createElement('style');
+    style.textContent = `:host{all:initial!important;position:fixed!important;inset:0!important;pointer-events:none!important;z-index:2147483647!important;color-scheme:light}
+      *{box-sizing:border-box}.panel{position:absolute;left:50%;bottom:24px;transform:translateX(-50%);width:min(520px,calc(100vw - 32px));padding:20px 22px;background:#faf7f1;border:1px solid #d9d2c9;border-top:3px solid #b72c26;border-radius:16px;box-shadow:0 12px 42px #14141425;pointer-events:auto;color:#25211e;font:14px/1.65 'PingFang SC',sans-serif}
+      strong{display:block;font-size:16px}p{margin:6px 0 14px;color:#6b655d;overflow-wrap:anywhere}.actions{display:flex;flex-wrap:wrap;gap:8px}button{font:inherit;border:1px solid #d9d2c9;border-radius:8px;padding:7px 12px;background:#fffdf9;color:#25211e;cursor:pointer}button.primary{background:#b72c26;color:white;border-color:#b72c26}button:disabled{opacity:.45;cursor:default}button:focus-visible{outline:3px solid #b72c2660;outline-offset:3px}.mark{position:fixed;border:2px solid #b72c26;background:#b72c2610;border-radius:3px;pointer-events:none}`;
+    const panel = document.createElement('section'); panel.className = 'panel'; panel.setAttribute('aria-label', '选择不翻译的内容');
+    const heading = document.createElement('strong'); heading.textContent = '让这些内容保持原样';
+    pickerText = document.createElement('p'); pickerText.setAttribute('role', 'status'); pickerText.setAttribute('aria-live', 'polite');
+    pickerActions = document.createElement('div'); pickerActions.className = 'actions';
+    pickerMarks = document.createElement('div');
+    panel.append(heading, pickerText, pickerActions); pickerRoot.append(style, pickerMarks, panel); document.documentElement.append(picker);
+  }
+
+  function startPicker() {
+    closePicker(); makePicker(); choosing = true;
+    pickerText.textContent = '点选昵称或其他不想翻译的内容。接着预览同类范围；按 Esc 退出。';
+    pickerActions.append(pickerButton('取消', closePicker));
+    document.addEventListener('pointermove', hoverPick, true);
+    document.addEventListener('click', clickPick, true);
+    document.addEventListener('keydown', keyPick, true);
+    window.addEventListener('scroll', repaintPick, { passive: true });
+    window.addEventListener('resize', repaintPick, { passive: true });
+    return { picking: true };
+  }
+
+  function pickTarget(event) {
+    let element = event.target instanceof Element ? event.target : event.target.parentElement;
+    if (!element || element.closest('[data-luna-ui]')) return null;
+    const translation = element.closest(`[${MARK}]`);
+    if (translation) element = [...records.values()].find(record => record.node === translation)?.element;
+    if (!element || element === document.body || element === document.documentElement || element.matches('script,style,input,textarea,select')) return null;
+    return element;
+  }
+
+  function markElements(elements) {
+    pickerMarks.replaceChildren();
+    for (const element of elements.slice(0, 200)) {
+      const box = element.getBoundingClientRect();
+      if (box.bottom < 0 || box.top > innerHeight) continue;
+      const mark = document.createElement('div'); mark.className = 'mark';
+      Object.assign(mark.style, { top: `${box.top}px`, left: `${box.left}px`, width: `${box.width}px`, height: `${box.height}px` });
+      pickerMarks.append(mark);
+    }
+  }
+
+  function hoverPick(event) { if (!picked && choosing) { const element = pickTarget(event); markElements(element ? [element] : []); } }
+  function keyPick(event) { if (event.key === 'Escape') { event.preventDefault(); closePicker(); } }
+  function matching(selector) {
+    try { return [...document.querySelectorAll(selector)].filter(element => !element.closest(`[data-luna-ui],[${MARK}]`)); } catch { return []; }
+  }
+
+  function stablePart(element) {
+    const tag = element.tagName.toLowerCase();
+    for (const attr of ['data-testid', 'data-role', 'itemprop', 'role']) {
+      const value = element.getAttribute(attr);
+      if (value && /^[a-zA-Z][\w-]{1,60}$/.test(value)) return `${tag}[${attr}="${value}"]`;
+    }
+    const classes = [...element.classList].filter(value => /^[a-zA-Z][a-zA-Z_-]{2,40}$/.test(value) && !/^(css-|jsx-|sc-|active$|selected$)/i.test(value));
+    return classes.length ? `${tag}.${classes.slice(0, 2).join('.')}` : '';
+  }
+
+  function proposeSelector(element) {
+    const candidates = [], own = stablePart(element);
+    if (own) candidates.push(own);
+    let path = own || element.tagName.toLowerCase();
+    for (let parent = element.parentElement, depth = 0; parent && parent !== document.body && depth < 4; parent = parent.parentElement, depth++) {
+      const stable = stablePart(parent) || (parent.matches('article,li') ? parent.tagName.toLowerCase() : '');
+      if (stable) candidates.unshift(`${stable} > ${path}`);
+      path = `${parent.tagName.toLowerCase()} > ${path}`;
+    }
+    const checked = candidates.filter(selector => {
+      if (selector.length > 300) return false;
+      const nodes = matching(selector);
+      return nodes.includes(element) && nodes.length > 0 && nodes.length <= 200 &&
+        nodes.every(node => !node.matches('html,body,main') && !node.querySelector('main,article'));
+    });
+    return checked.find(selector => matching(selector).length > 1) || checked[0] || '';
+  }
+
+  function repaintPick() {
+    if (!picker || !picked) return;
+    markElements(candidateSelector ? matching(candidateSelector) : [picked]);
+  }
+
+  function selectPick(element) {
+    picked = element; candidateSelector = proposeSelector(element);
+    const count = candidateSelector ? matching(candidateSelector).length : 1;
+    pickerText.textContent = candidateSelector
+      ? `高亮了当前页面 ${count} 处同类位置。保存后对 ${location.hostname} 生效，滚动新增的同类内容也保持原样。正文中的选中片段保留，周围句子继续翻译。`
+      : '没有找到足够稳定的同类规则。可以只忽略这一处，或扩大选区后重新预览。';
+    const save = pickerButton(`不翻译同类 · ${count} 处`, async () => {
+      if (pickerSaving || !candidateSelector) return;
+      const selector = candidateSelector; pickerSaving = true; save.disabled = true;
+      try {
+        const response = await chrome.runtime.sendMessage({ type: 'LUNA_RULE_SAVE', selector });
+        if (!response?.ok) throw Error(response?.error || '保存失败。');
+        const rule = response.result;
+        if (!siteRules.some(item => item.id === rule.id)) siteRules.push(rule);
+        closePicker(); refreshExclusions();
+        if (rule.created === false) { makePicker(); pickerText.textContent = '此网站已有这条规则。可在设置中管理。'; pickerActions.append(pickerButton('完成', closePicker)); return; }
+        showUndo('已记住此网站的排除规则。', async () => {
+          const result = await chrome.runtime.sendMessage({ type: 'LUNA_RULE_DELETE', id: rule.id });
+          if (!result?.ok) throw Error(result?.error || '撤销失败。');
+          siteRules = siteRules.filter(item => item.id !== rule.id);
+        });
+      } catch (error) { if (picker) pickerText.textContent = error.message; }
+      finally { pickerSaving = false; save.disabled = false; }
+    }, true);
+    save.disabled = !candidateSelector;
+    const single = pickerButton('只忽略这一处', () => {
+      const node = picked; ignoredNodes.add(node); closePicker(); refreshExclusions();
+      showUndo('此处已忽略，仅对当前页面有效。', async () => ignoredNodes.delete(node));
+    });
+    const parent = pickerButton('扩大选区', () => selectPick(picked.parentElement));
+    parent.disabled = !picked.parentElement || picked.parentElement === document.body || picked.parentElement === document.documentElement;
+    pickerActions.replaceChildren(save, single, parent, pickerButton('重选', startPicker), pickerButton('取消', closePicker));
+    repaintPick();
+  }
+
+  function clickPick(event) {
+    if (!choosing || event.composedPath().includes(picker)) return;
+    const element = pickTarget(event); if (!element) return;
+    event.preventDefault(); event.stopImmediatePropagation(); selectPick(element);
+  }
+
+  function showUndo(message, undo) {
+    makePicker(); pickerText.textContent = message;
+    pickerActions.append(pickerButton('撤销', async event => {
+      event.currentTarget.disabled = true;
+      try { await undo(); closePicker(); refreshExclusions(); }
+      catch (error) { pickerText.textContent = error.message; event.currentTarget.disabled = false; }
+    }, true), pickerButton('完成', closePicker));
   }
 
   function start(language = target, restoreOnly = false) {
     checkPage();
     if (language !== target) { reset(); target = language; }
+    for (const [id, batch] of batches) cancelBatch(id, batch);
     epoch++;
     cacheOnly = restoreOnly; remembered = restoreOnly; activePage = pageIdentity();
     for (const record of records.values()) { record.cacheMisses.clear(); if (record.state !== 'done') record.state = 'pending'; }
@@ -393,6 +664,7 @@
   }
 
   function stop() {
+    for (const [id, batch] of batches) cancelBatch(id, batch);
     preparing = false; running = false; epoch++; viewport.disconnect(); clearTimeout(scanTimer); scanTimer = null;
     for (const record of records.values()) if (['translating', 'checking'].includes(record.state)) record.state = 'pending';
     dirtyRoots.clear(); update(); return status();
@@ -417,14 +689,14 @@
     lastHref = location.href;
     const page = pageIdentity();
     if (page === lastPage) return false;
-    lastPage = page; reset(); restoreFromHistory(); return true;
+    lastPage = page; ignoredNodes.clear(); closePicker(); reset(); restoreFromHistory(); return true;
   }
 
   async function restoreFromHistory() {
     const mine = epoch, page = pageIdentity(), revision = restoreRevision;
     try {
       const response = await chrome.runtime.sendMessage({ type: 'LUNA_RESTORE_CONFIG' });
-      if (mine === epoch && revision === restoreRevision && !running && !preparing && page === pageIdentity() && response?.ok && response.result.restore) start(response.result.target, true);
+      if (mine === epoch && revision === restoreRevision && !running && !preparing && page === pageIdentity() && response?.ok && response.result.restore) { applyScheduler(response.result); start(response.result.target, true); }
     } catch { /* A new page stays idle when local history is unavailable. */ }
   }
 
@@ -486,8 +758,9 @@
   chrome.runtime.onMessage.addListener((message, sender, respond) => {
     if (message.type !== 'LUNA_PAGE') return;
     const action = message.action;
+    applyScheduler(message);
     const result = action === 'start' ? start(message.target) : action === 'pause' ? stop() :
-      action === 'reset' ? reset() : action === 'toggle' ? ((running && !cacheOnly) || preparing ? stop() : start(message.target)) : status();
+      action === 'pick' ? startPicker() : action === 'reset' ? reset() : action === 'toggle' ? ((running && !cacheOnly) || preparing ? stop() : start(message.target)) : status();
     respond(result);
   });
   // Only previously translated pages may scan for cache-only restoration.
@@ -495,11 +768,14 @@
   makeBadge(); update();
   chrome.runtime.sendMessage({ type: 'LUNA_UI_CONFIG' }).then(response => { if (response?.ok) applyUI(response.result); }).catch(() => {});
   window.addEventListener('resize', positionButton, { passive: true });
+  window.addEventListener('scroll', () => { if (running) pump(); }, { passive: true });
   window.addEventListener('popstate', checkPage);
   window.addEventListener('hashchange', checkPage);
   window.navigation?.addEventListener('currententrychange', checkPage);
   chrome.storage?.onChanged?.addListener((changes, area) => {
     if (area !== 'local') return;
+    if (changes.siteRules) { siteRules = changes.siteRules.newValue?.[location.hostname] || []; refreshExclusions(); }
+    if (changes.schedulerConfig) { applyScheduler(changes.schedulerConfig.newValue); pump(); }
     if (changes.settings) applyUI(changes.settings.newValue);
     if (changes.bridgeRevision) { restoreRevision++; reset(); return; }
     if (!changes.settings || (changes.settings.oldValue?.target === changes.settings.newValue?.target &&
@@ -508,5 +784,6 @@
     if (cacheOnly) reset();
     if (!running && !preparing) restoreFromHistory();
   });
+  chrome.runtime.sendMessage({ type: 'LUNA_RULES' }).then(response => { if (response?.ok) siteRules = response.result.rules || []; }).catch(() => {}).finally(() => { rulesLoaded = true; refreshExclusions(); });
   restoreFromHistory();
 })();

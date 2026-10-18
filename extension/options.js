@@ -6,7 +6,7 @@ async function send(message) {
 }
 const notify = text => { $('notice').textContent = text; };
 const bytes = value => value < 1048576 ? `${(value / 1024).toFixed(1)} KiB` : `${(value / 1048576).toFixed(1)} MiB`;
-let serviceConfig;
+let serviceConfig, concurrencyDirty = false;
 let promptDirty = false, cacheDirty = false, modelDirty = false, modelSaving = false, serviceAvailable = false;
 let modelCatalog = [];
 let viewRevision = 0, connectionCheck = 0, catalogError = '';
@@ -47,6 +47,7 @@ function fillModels(config) {
 }
 function fillService(config) {
   serviceConfig = config;
+  if (!concurrencyDirty) $('concurrency').value = config.concurrency || 12;
   if (!promptDirty) $('supplementalPrompt').value = config.supplementalPrompt;
   if (!cacheDirty) { $('cacheDays').value = config.cacheDays; $('cacheMaxBytes').value = config.cacheMaxBytes; }
   $('base-prompt').textContent = config.basePrompt;
@@ -142,3 +143,31 @@ $('clear-cache').addEventListener('click', event => operation(event.currentTarge
   viewRevision++;
   notify('翻译缓存已清空。登录、连接和偏好保留；本浏览器的页面翻译已重置。');
 }));
+
+$('concurrency').addEventListener('input', () => { concurrencyDirty = true; });
+$('save-concurrency').addEventListener('click', event => operation(event.currentTarget, async () => {
+  const concurrency = Number($('concurrency').value);
+  if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 24) throw new Error('并发量请输入 1–24 的整数。');
+  const config = await send({ type: 'LUNA_SERVICE_SAVE', settings: { concurrency } });
+  viewRevision++;
+  if (Number($('concurrency').value) === concurrency) concurrencyDirty = false;
+  fillService(config); notify(`并发上限已设为 ${config.concurrency}，本机所有标签页共用；已开始的请求会完成。`);
+}));
+async function showRules() {
+  try {
+    const sites = await send({ type: 'LUNA_RULE_LIST' });
+    const list = $('site-rules'); list.replaceChildren();
+    for (const [host, rules] of Object.entries(sites)) for (const rule of rules) {
+      const row = document.createElement('div'); row.className = 'setting-row';
+      const text = document.createElement('span'); text.textContent = host;
+      const small = document.createElement('small'); small.textContent = rule.selector; text.append(small);
+      const remove = document.createElement('button'); remove.className = 'quiet'; remove.textContent = '删除';
+      remove.addEventListener('click', () => operation(remove, async () => {
+        await send({ type: 'LUNA_RULE_DELETE', host, id: rule.id }); await showRules(); notify('排除规则已删除，打开的页面已更新。');
+      }));
+      row.append(text, remove); list.append(row);
+    }
+    if (!list.children.length) list.textContent = '还没有保存的网站排除规则。';
+  } catch (error) { $('site-rules').textContent = error.message; }
+}
+showRules();
